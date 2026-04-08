@@ -92,17 +92,33 @@ app.get("/status/:id", async (req, res) => {
 
 // ================= CARTÃO =================
 app.post("/pagar-cartao", async (req, res) => {
-  const { total, card, nome } = req.body;
+  const { total, card, nome, cpf } = req.body;
+
+  // Normaliza o CPF recebido (remove máscara)
+  const cpfLimpo = (cpf || "52998224725").replace(/\D/g, "");
 
   const payload = {
     amount:        Math.round(total * 100),
-    paymentMethod: "CREDIT_CARD",
+    currency:      "BRL",
+    paymentMethod: "CREDIT_CARD",   // valor correto aceito pela GhostsPay
+    description:   "Pedido EaiBurguer",
     companyId:     COMPANY_ID,
-    card,
+    installments:  1,
+    card: {
+      number:   card.number,
+      holderName: card.name,        // campo que a API espera como holderName
+      expMonth:  card.expMonth,
+      expYear:   card.expYear,
+      cvv:       card.cvv
+    },
     customer: {
-      name:     nome || "Cliente",
+      name:     nome || card.name || "Cliente",
       email:    `${(nome||"cliente").toLowerCase().replace(/\s+/g,"")}@eaiburguer.com`,
-      document: { type: "CPF", number: "52998224725" }
+      phone:    "11999999999",
+      document: {
+        type:   "CPF",
+        number: cpfLimpo           // CPF real do titular fornecido pelo frontend
+      }
     }
   };
 
@@ -114,10 +130,17 @@ app.post("/pagar-cartao", async (req, res) => {
       headers: { "Authorization": getAuth(), "Content-Type": "application/json" },
       body:    JSON.stringify(payload)
     });
-    const data = await response.json();
-    log("RESPOSTA CARTAO", data);
-    res.json(data);
+
+    const text = await response.text();
+    log("RESPOSTA CARTAO (status " + response.status + ")", JSON.parse(text));
+
+    let data;
+    try { data = JSON.parse(text); }
+    catch { return res.status(500).json({ error: "Resposta invalida da API", raw: text }); }
+
+    res.status(response.status).json(data);
   } catch (e) {
+    console.error("ERRO CARTAO:", e.message);
     res.status(500).json({ error: e.message });
   }
 });

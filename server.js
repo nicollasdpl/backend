@@ -90,39 +90,41 @@ app.get("/status/:id", async (req, res) => {
   }
 });
 
-// ================= CARTÃO =================
+// ================= CARTÃO (via token gerado pelo SDK GhostsPay no frontend) =================
+// A GhostsPay exige tokenização via GhostsPays.encrypt() antes de enviar.
+// O frontend gera o token_id e manda aqui. Nunca recebemos dados brutos do cartão.
 app.post("/pagar-cartao", async (req, res) => {
-  const { total, card, nome, cpf } = req.body;
+  const { total, tokenId, nome, cpf, installments, fingerprint } = req.body;
 
-  // Normaliza o CPF recebido (remove máscara)
-  const cpfLimpo = (cpf || "52998224725").replace(/\D/g, "");
+  if (!tokenId) {
+    return res.status(400).json({ error: "token_id ausente. O cartão precisa ser tokenizado pelo SDK GhostsPay antes do envio." });
+  }
+
+  const cpfLimpo = (cpf || "").replace(/\D/g, "");
 
   const payload = {
     amount:        Math.round(total * 100),
     currency:      "BRL",
-    paymentMethod: "CREDIT_CARD",   // valor correto aceito pela GhostsPay
+    paymentMethod: "CREDIT_CARD",
     description:   "Pedido EaiBurguer",
     companyId:     COMPANY_ID,
-    installments:  1,
+    installments:  installments || 1,
     card: {
-      number:   card.number,
-      holderName: card.name,        // campo que a API espera como holderName
-      expMonth:  card.expMonth,
-      expYear:   card.expYear,
-      cvv:       card.cvv
+      token: tokenId            // token gerado pelo GhostsPays.encrypt() no frontend
     },
+    ...(fingerprint ? { fingerPrint: fingerprint } : {}),
     customer: {
-      name:     nome || card.name || "Cliente",
+      name:     nome || "Cliente",
       email:    `${(nome||"cliente").toLowerCase().replace(/\s+/g,"")}@eaiburguer.com`,
       phone:    "11999999999",
       document: {
         type:   "CPF",
-        number: cpfLimpo           // CPF real do titular fornecido pelo frontend
+        number: cpfLimpo || "52998224725"
       }
     }
   };
 
-  log("PAYLOAD CARTAO", payload);
+  log("PAYLOAD CARTAO TOKENIZADO", payload);
 
   try {
     const response = await fetch(API_URL, {
@@ -132,11 +134,13 @@ app.post("/pagar-cartao", async (req, res) => {
     });
 
     const text = await response.text();
-    log("RESPOSTA CARTAO (status " + response.status + ")", JSON.parse(text));
-
     let data;
-    try { data = JSON.parse(text); }
-    catch { return res.status(500).json({ error: "Resposta invalida da API", raw: text }); }
+    try {
+      data = JSON.parse(text);
+      log("RESPOSTA CARTAO (status " + response.status + ")", data);
+    } catch {
+      return res.status(500).json({ error: "Resposta invalida da API", raw: text });
+    }
 
     res.status(response.status).json(data);
   } catch (e) {

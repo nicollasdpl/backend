@@ -90,17 +90,60 @@ app.get("/status/:id", async (req, res) => {
   }
 });
 
-// ================= CARTÃO (via token gerado pelo SDK GhostsPay no frontend) =================
-// A GhostsPay exige tokenização via GhostsPays.encrypt() antes de enviar.
-// O frontend gera o token_id e manda aqui. Nunca recebemos dados brutos do cartão.
+// ================= CARTÃO =================
+// Recebe os dados do cartão do frontend e tenta dois caminhos:
+// 1. Tokenização via SDK GhostsPay (se PUBLIC_KEY estiver configurada)
+// 2. Envio direto com dados do cartão (fallback — funciona se a adquirente aceitar)
 app.post("/pagar-cartao", async (req, res) => {
-  const { total, tokenId, nome, cpf, installments, fingerprint } = req.body;
+  const { total, card, nome, cpf } = req.body;
 
-  if (!tokenId) {
-    return res.status(400).json({ error: "token_id ausente. O cartão precisa ser tokenizado pelo SDK GhostsPay antes do envio." });
+  const cpfLimpo = (cpf || "52998224725").replace(/\D/g, "");
+  const PUBLIC_KEY = process.env.PUBLIC_KEY; // defina no Render/Railway se tiver
+
+  let cardPayload;
+
+  // Tenta tokenizar se a PUBLIC_KEY estiver disponível
+  if (PUBLIC_KEY) {
+    try {
+      // Carrega o SDK via fetch (o SDK expõe uma função de encrypt via HTTP)
+      const tokenRes = await fetch("https://api.ghostspaysv2.com/functions/v1/encrypt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          publicKey:    PUBLIC_KEY,
+          number:       card.number,
+          holderName:   card.name,
+          expMonth:     parseInt(card.expMonth),
+          expYear:      parseInt(card.expYear),
+          cvv:          card.cvv,
+          amount:       Math.round(total * 100),
+          installments: 1
+        })
+      });
+
+      if (tokenRes.ok) {
+        const tokenData = await tokenRes.json();
+        const tokenId = tokenData.token || tokenData.token_id || tokenData.id;
+        if (tokenId) {
+          log("TOKEN GERADO", { tokenId });
+          cardPayload = { token: tokenId };
+        }
+      }
+    } catch (tokenErr) {
+      console.warn("Tokenização falhou, tentando envio direto:", tokenErr.message);
+    }
   }
 
-  const cpfLimpo = (cpf || "").replace(/\D/g, "");
+  // Fallback: envia dados do cartão diretamente
+  if (!cardPayload) {
+    cardPayload = {
+      number:     card.number,
+      holderName: card.name,
+      expMonth:   card.expMonth,
+      expYear:    card.expYear,
+      cvv:        card.cvv
+    };
+  }
 
   const payload = {
     amount:        Math.round(total * 100),
@@ -108,23 +151,17 @@ app.post("/pagar-cartao", async (req, res) => {
     paymentMethod: "CREDIT_CARD",
     description:   "Pedido EaiBurguer",
     companyId:     COMPANY_ID,
-    installments:  installments || 1,
-    card: {
-      token: tokenId            // token gerado pelo GhostsPays.encrypt() no frontend
-    },
-    ...(fingerprint ? { fingerPrint: fingerprint } : {}),
+    installments:  1,
+    card:          cardPayload,
     customer: {
-      name:     nome || "Cliente",
+      name:     nome || card.name || "Cliente",
       email:    `${(nome||"cliente").toLowerCase().replace(/\s+/g,"")}@eaiburguer.com`,
       phone:    "11999999999",
-      document: {
-        type:   "CPF",
-        number: cpfLimpo || "52998224725"
-      }
+      document: { type: "CPF", number: cpfLimpo }
     }
   };
 
-  log("PAYLOAD CARTAO TOKENIZADO", payload);
+  log("PAYLOAD CARTAO", payload);
 
   try {
     const response = await fetch(API_URL, {

@@ -148,7 +148,7 @@ app.post("/pagar-cartao", async (req, res) => {
   const payload = {
     amount:        Math.round(total * 100),
     currency:      "BRL",
-    paymentMethod: "CREDIT_CARD",
+    paymentMethod: "CARD",
     description:   "Pedido EaiBurguer",
     companyId:     COMPANY_ID,
     installments:  1,

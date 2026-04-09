@@ -91,37 +91,33 @@ app.get("/status/:id", async (req, res) => {
 });
 
 // ================= CARTÃO =================
+// Recebe o token_id gerado pelo SDK GhostsPays.encrypt() no frontend
+// e cobra usando o campo card.id conforme documentação da API
 app.post("/pagar-cartao", async (req, res) => {
-  const { total, card, nome, cpf } = req.body;
+  const { total, tokenId, nome, cpf } = req.body;
 
-  // CPF sem máscara e sem pontos/traços
+  if (!tokenId) {
+    return res.status(400).json({ error: "token_id ausente. Certifique-se de que a tokenização ocorreu no frontend." });
+  }
+
   const cpfLimpo = (cpf || "52998224725").replace(/\D/g, "");
 
-  // Campos exatos conforme documentação GhostsPay (imagem do card object):
-  // - number: apenas números (sem espaços)
-  // - holderName: nome do titular
-  // - expirationMonth: inteiro 1–12
-  // - expirationYear: inteiro 4 dígitos (ex: 2034)
-  // - cvv: string
+  // Conforme documentação: usar card.id com o token gerado pelo SDK
   const payload = {
     amount:        Math.round(total * 100),
-    paymentMethod: "CARD",          // "CARD" — não "CREDIT_CARD"
+    paymentMethod: "CARD",
     companyId:     COMPANY_ID,
     installments:  1,
     card: {
-      number:          card.number.replace(/\D/g, ""),   // só dígitos
-      holderName:      card.name.toUpperCase(),
-      expirationMonth: parseInt(card.expMonth, 10),      // inteiro 1–12
-      expirationYear:  parseInt("20" + card.expYear, 10),// inteiro 4 dígitos
-      cvv:             String(card.cvv)
+      id: tokenId    // token_id gerado pelo GhostsPays.encrypt() no frontend
     },
     customer: {
-      name:     nome || card.name || "Cliente",
+      name:     nome || "Cliente",
       email:    `${(nome||"cliente").toLowerCase().replace(/\s+/g,"")}@eaiburguer.com`,
       phone:    "11999999999",
       document: {
         type:   "CPF",
-        number: cpfLimpo             // sem máscara: só 11 dígitos
+        number: cpfLimpo
       }
     }
   };

@@ -13,45 +13,72 @@ function getAuth() {
   return "Basic " + Buffer.from(`${SECRET_KEY}:${COMPANY_ID}`).toString('base64');
 }
 
-// ── Helpers de log ───────────────────────────────────────────────
 function log(label, obj) {
   console.log(`\n===== ${label} =====`);
   console.log(JSON.stringify(obj, null, 2));
 }
 
-// ================= PIX =================
-app.post('/pagar', async (req, res) => {
-  const { total, items, customer, nome, telefone } = req.body;
+// ── Helpers ──────────────────────────────────────────────────────
 
-  // Monta customer com dados reais do pedido
-  // CPF fictício válido para testes (passa na validação de dígito)
-  const customerPayload = {
-    name:  customer?.name  || nome || "Cliente",
-    email: customer?.email || `${(nome||"cliente").toLowerCase().replace(/\s+/g,"")}@eaiburguer.com`,
-    phone: customer?.phone || (telefone || "11999999999").replace(/\D/g, ""),
+function buildCustomer({ nome, email, telefone, cpf }) {
+  const nomeLimpo  = (nome  || "Cliente").trim();
+  const emailLimpo = email  || `${nomeLimpo.toLowerCase().replace(/\s+/g, "")}@eaiburguer.com`;
+  const foneLimpo  = (telefone || "11999999999").replace(/\D/g, "");   // string de dígitos
+  const cpfLimpo   = (cpf  || "52998224725").replace(/\D/g, "");       // string de dígitos
+
+  return {
+    name:  nomeLimpo,
+    email: emailLimpo,
+    phone: foneLimpo,
     document: {
       type:   "CPF",
-      number: "52998224725"   // CPF fictício válido (gerado por algoritmo)
+      number: cpfLimpo
     }
   };
+}
+
+function buildItems(items) {
+  if (!items || items.length === 0) {
+    return [{ title: "Pedido EaiBurguer", unitPrice: 100, quantity: 1 }];
+  }
+  return items.map(it => ({
+    title:     String(it.nome || it.title || "Item"),
+    unitPrice: Math.round((it.precoUnit || it.unitPrice || 0) * 100), // centavos, inteiro
+    quantity:  parseInt(it.quantidade || it.quantity || 1, 10)
+  }));
+}
+
+function buildShipping(enderecoDetalhado) {
+  if (!enderecoDetalhado) return null;
+  const ed = enderecoDetalhado;
+  const addr = {
+    street:       ed.rua        || "Rua Sem Nome",
+    streetNumber: String(ed.numero || "0"),          // string
+    zipCode:      (ed.cep || "01001000").replace(/\D/g, ""),
+    neighborhood: ed.bairro     || "Centro",
+    city:         ed.cidade     || "São Paulo",
+    state:        ed.estado     || "SP",
+    country:      "BR"
+  };
+  if (ed.complemento) addr.complement = ed.complemento;
+  return { address: addr };
+}
+
+// ================= PIX =================
+app.post('/pagar', async (req, res) => {
+  const { total, items, nome, email, telefone, cpf, enderecoDetalhado } = req.body;
 
   const payload = {
     amount:        Math.round(total * 100),
-    currency:      "BRL",
     paymentMethod: "PIX",
-    description:   "Pedido EaiBurguer",
-    companyId:     COMPANY_ID,
-    customer:      customerPayload,
-    items: (items || []).map(it => ({
-      id:        String(it.id || it.nome),
-      title:     it.nome,
-      unitPrice: Math.round(it.precoUnit * 100),
-      quantity:  it.quantidade,
-      tangible:  true
-    }))
+    customer:      buildCustomer({ nome, email, telefone, cpf }),
+    items:         buildItems(items)
   };
 
-  log("PAYLOAD ENVIADO PARA GHOSTSPAY", payload);
+  const shipping = buildShipping(enderecoDetalhado);
+  if (shipping) payload.shipping = shipping;
+
+  log("PAYLOAD PIX → GHOSTSPAY", payload);
 
   try {
     const response = await fetch(API_URL, {
@@ -61,17 +88,17 @@ app.post('/pagar', async (req, res) => {
     });
 
     const text = await response.text();
-    log("RESPOSTA GHOSTSPAY (status " + response.status + ")", JSON.parse(text));
-
     let data;
-    try { data = JSON.parse(text); }
-    catch { return res.status(500).json({ error: "Resposta invalida da API", raw: text }); }
+    try {
+      data = JSON.parse(text);
+      log("RESPOSTA PIX (status " + response.status + ")", data);
+    } catch {
+      return res.status(500).json({ error: "Resposta inválida da API", raw: text });
+    }
 
-    // Repassa tudo para o frontend decidir
     res.status(response.status).json(data);
-
   } catch (e) {
-    console.error("ERRO DE CONEXAO:", e.message);
+    console.error("ERRO PIX:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -91,38 +118,40 @@ app.get("/status/:id", async (req, res) => {
 });
 
 // ================= CARTÃO =================
-// Recebe o token_id gerado pelo SDK GhostsPays.encrypt() no frontend
-// e cobra usando o campo card.id conforme documentação da API
 app.post("/pagar-cartao", async (req, res) => {
-  const { total, tokenId, nome, cpf } = req.body;
+  const {
+    total, items,
+    nome, email, telefone, cpf,
+    cardNumber, holderName, expMonth, expYear, cvv,
+    enderecoDetalhado
+  } = req.body;
 
-  if (!tokenId) {
-    return res.status(400).json({ error: "token_id ausente. Certifique-se de que a tokenização ocorreu no frontend." });
-  }
+  if (!cardNumber) return res.status(400).json({ error: "Número do cartão ausente." });
+  if (!cvv)        return res.status(400).json({ error: "CVV ausente." });
+  if (!expMonth || !expYear) return res.status(400).json({ error: "Validade ausente." });
 
-  const cpfLimpo = (cpf || "52998224725").replace(/\D/g, "");
+  const cardNumLimpo = String(cardNumber).replace(/\D/g, ""); // string de dígitos
+  const cvvLimpo     = String(cvv).replace(/\D/g, "");        // string de dígitos
 
-  // Conforme documentação: usar card.id com o token gerado pelo SDK
   const payload = {
     amount:        Math.round(total * 100),
     paymentMethod: "CARD",
-    companyId:     COMPANY_ID,
     installments:  1,
+    customer:      buildCustomer({ nome, email, telefone, cpf }),
+    items:         buildItems(items),
     card: {
-      id: tokenId    // token_id gerado pelo GhostsPays.encrypt() no frontend
-    },
-    customer: {
-      name:     nome || "Cliente",
-      email:    `${(nome||"cliente").toLowerCase().replace(/\s+/g,"")}@eaiburguer.com`,
-      phone:    "11999999999",
-      document: {
-        type:   "CPF",
-        number: cpfLimpo
-      }
+      number:          cardNumLimpo,                           // string de dígitos
+      holderName:      (holderName || nome || "Cliente").trim(),
+      expirationMonth: parseInt(expMonth, 10),                 // inteiro 1–12
+      expirationYear:  parseInt(expYear,  10),                 // inteiro 4 dígitos
+      cvv:             cvvLimpo                                // string de dígitos
     }
   };
 
-  log("PAYLOAD CARTAO", payload);
+  const shipping = buildShipping(enderecoDetalhado);
+  if (shipping) payload.shipping = shipping;
+
+  log("PAYLOAD CARTÃO → GHOSTSPAY", payload);
 
   try {
     const response = await fetch(API_URL, {
@@ -135,14 +164,14 @@ app.post("/pagar-cartao", async (req, res) => {
     let data;
     try {
       data = JSON.parse(text);
-      log("RESPOSTA CARTAO (status " + response.status + ")", data);
+      log("RESPOSTA CARTÃO (status " + response.status + ")", data);
     } catch {
-      return res.status(500).json({ error: "Resposta invalida da API", raw: text });
+      return res.status(500).json({ error: "Resposta inválida da API", raw: text });
     }
 
     res.status(response.status).json(data);
   } catch (e) {
-    console.error("ERRO CARTAO:", e.message);
+    console.error("ERRO CARTÃO:", e.message);
     res.status(500).json({ error: e.message });
   }
 });

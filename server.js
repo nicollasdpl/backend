@@ -91,73 +91,38 @@ app.get("/status/:id", async (req, res) => {
 });
 
 // ================= CARTÃO =================
-// Recebe os dados do cartão do frontend e tenta dois caminhos:
-// 1. Tokenização via SDK GhostsPay (se PUBLIC_KEY estiver configurada)
-// 2. Envio direto com dados do cartão (fallback — funciona se a adquirente aceitar)
 app.post("/pagar-cartao", async (req, res) => {
   const { total, card, nome, cpf } = req.body;
 
+  // CPF sem máscara e sem pontos/traços
   const cpfLimpo = (cpf || "52998224725").replace(/\D/g, "");
-  const PUBLIC_KEY = process.env.PUBLIC_KEY; // defina no Render/Railway se tiver
 
-  let cardPayload;
-
-  // Tenta tokenizar se a PUBLIC_KEY estiver disponível
-  if (PUBLIC_KEY) {
-    try {
-      // Carrega o SDK via fetch (o SDK expõe uma função de encrypt via HTTP)
-      const tokenRes = await fetch("https://api.ghostspaysv2.com/functions/v1/encrypt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          publicKey:    PUBLIC_KEY,
-          number:       card.number,
-          holderName:   card.name,
-          expMonth:     parseInt(card.expMonth),
-          expYear:      parseInt(card.expYear),
-          cvv:          card.cvv,
-          amount:       Math.round(total * 100),
-          installments: 1
-        })
-      });
-
-      if (tokenRes.ok) {
-        const tokenData = await tokenRes.json();
-        const tokenId = tokenData.token || tokenData.token_id || tokenData.id;
-        if (tokenId) {
-          log("TOKEN GERADO", { tokenId });
-          cardPayload = { token: tokenId };
-        }
-      }
-    } catch (tokenErr) {
-      console.warn("Tokenização falhou, tentando envio direto:", tokenErr.message);
-    }
-  }
-
-  // Fallback: envia dados do cartão diretamente
-  if (!cardPayload) {
-    cardPayload = {
-      number:     card.number,
-      holderName: card.name,
-      expMonth:   card.expMonth,
-      expYear:    card.expYear,
-      cvv:        card.cvv
-    };
-  }
-
+  // Campos exatos conforme documentação GhostsPay (imagem do card object):
+  // - number: apenas números (sem espaços)
+  // - holderName: nome do titular
+  // - expirationMonth: inteiro 1–12
+  // - expirationYear: inteiro 4 dígitos (ex: 2034)
+  // - cvv: string
   const payload = {
     amount:        Math.round(total * 100),
-    currency:      "BRL",
-    paymentMethod: "CARD",
-    description:   "Pedido EaiBurguer",
+    paymentMethod: "CARD",          // "CARD" — não "CREDIT_CARD"
     companyId:     COMPANY_ID,
     installments:  1,
-    card:          cardPayload,
+    card: {
+      number:          card.number.replace(/\D/g, ""),   // só dígitos
+      holderName:      card.name.toUpperCase(),
+      expirationMonth: parseInt(card.expMonth, 10),      // inteiro 1–12
+      expirationYear:  parseInt("20" + card.expYear, 10),// inteiro 4 dígitos
+      cvv:             String(card.cvv)
+    },
     customer: {
       name:     nome || card.name || "Cliente",
       email:    `${(nome||"cliente").toLowerCase().replace(/\s+/g,"")}@eaiburguer.com`,
       phone:    "11999999999",
-      document: { type: "CPF", number: cpfLimpo }
+      document: {
+        type:   "CPF",
+        number: cpfLimpo             // sem máscara: só 11 dígitos
+      }
     }
   };
 

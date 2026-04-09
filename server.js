@@ -126,6 +126,9 @@ app.post("/pagar-cartao", async (req, res) => {
     enderecoDetalhado
   } = req.body;
 
+  // Log de diagnóstico — mostra o que o frontend enviou
+  console.log("\n[CARTÃO] body recebido:", JSON.stringify({ total, cardNumber: cardNumber ? "***" + String(cardNumber).slice(-4) : "AUSENTE", expMonth, expYear, cvv: cvv ? "***" : "AUSENTE", nome }));
+
   if (!cardNumber) return res.status(400).json({ error: "Número do cartão ausente." });
   if (!cvv)        return res.status(400).json({ error: "CVV ausente." });
   if (!expMonth || !expYear) return res.status(400).json({ error: "Validade ausente." });
